@@ -514,6 +514,13 @@ POST /v1/music/generations  { "model": "suno/v3.5",   "prompt": "..." }
 > outbound URL policy (`OMNIROUTE_ALLOW_LOCAL_PROVIDER_URLS` / `OMNIROUTE_ALLOW_PRIVATE_PROVIDER_URLS`);
 > cloud-metadata hosts are never routed to. The memory engine's rerank step calls this route over
 > loopback, so the same rule governs `rerankProviderModel` in the Memory settings.
+>
+> **Local server shapes:** the node is called at `<base>/v1/rerank` and, on 404, at `<base>/rerank`
+> (Infinity, TEI). The upstream body carries both the Cohere/OpenAI spelling (`documents`,
+> `return_documents`) and the TEI spelling (`texts`, `return_text`), and the upstream response is
+> normalized to the Cohere envelope: TEI's bare `[{index, score, text}]`, `{results: [{index, score}]}`
+> from thin gateways, and Voyage-style `{data: [...]}` all come back to the client as
+> `{results: [{index, relevance_score, document?}]}`, sorted by score and capped at `top_n`.
 
 ### Dedicated Provider Routes
 

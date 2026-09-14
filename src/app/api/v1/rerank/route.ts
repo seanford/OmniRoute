@@ -12,6 +12,10 @@ import { v1RerankSchema } from "@/shared/validation/schemas";
 import { isValidationFailure, validateBody } from "@/shared/validation/helpers";
 import { loadRerankProviderNodes } from "@/app/api/v1/_shared/rerankProviderNodes";
 import {
+  buildLocalRerankRequestBody,
+  normalizeLocalRerankResponse,
+} from "@/app/api/v1/_shared/rerankLocalNodeShapes";
+import {
   isAllRateLimitedCredentials,
   rateLimitedProviderResponse,
 } from "@/app/api/v1/_shared/rateLimit";
@@ -138,40 +142,34 @@ async function postHandler(request, context) {
 
       const token = credentials?.apiKey || credentials?.accessToken;
       const startTime = Date.now();
+      // One body serves every known local server: Cohere/OpenAI spelling (`documents`,
+      // `return_documents`) plus the TEI spelling (`texts`, `return_text`). See
+      // `_shared/rerankLocalNodeShapes.ts`.
+      const upstreamBody = JSON.stringify(
+        buildLocalRerankRequestBody({
+          model: localModel,
+          query: body.query,
+          documents: body.documents,
+          top_n: body.top_n as number | undefined,
+          return_documents: body.return_documents as boolean | undefined,
+        })
+      );
+      const upstreamInit: RequestInit = {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: upstreamBody,
+      };
       try {
-        let res = await fetch(localProvider.baseUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            model: localModel,
-            query: body.query,
-            documents: body.documents,
-            top_n: body.top_n || body.documents.length,
-            return_documents: body.return_documents !== false,
-          }),
-        });
+        let res = await fetch(localProvider.baseUrl, upstreamInit);
 
         // Some local providers (e.g. Infinity, TEI) mount at /rerank rather than /v1/rerank
         if (res.status === 404 && localProvider.baseUrl.endsWith("/v1/rerank")) {
           const fallbackUrl = localProvider.baseUrl.replace(/\/v1\/rerank$/, "/rerank");
           try {
-            const fallbackRes = await fetch(fallbackUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${token}`,
-              },
-              body: JSON.stringify({
-                model: localModel,
-                query: body.query,
-                documents: body.documents,
-                top_n: body.top_n || body.documents.length,
-                return_documents: body.return_documents !== false,
-              }),
-            });
+            const fallbackRes = await fetch(fallbackUrl, upstreamInit);
             if (fallbackRes.ok || fallbackRes.status !== 404) {
               res = fallbackRes;
             }
@@ -208,7 +206,13 @@ async function postHandler(request, context) {
           return errorResponse(res.status, errorMessage);
         }
 
-        const data = await res.json();
+        // Fold TEI's bare `[{index, score, text}]`, `score`-only gateways, and
+        // Voyage-style `{data: [...]}` into the Cohere envelope clients (and the
+        // memory engine, which reads `relevance_score`) expect.
+        const data = normalizeLocalRerankResponse(await res.json(), body.documents, {
+          top_n: body.top_n as number | undefined,
+          return_documents: body.return_documents as boolean | undefined,
+        });
         const latencyMs = Date.now() - startTime;
         saveCallLog({
           method: "POST",
