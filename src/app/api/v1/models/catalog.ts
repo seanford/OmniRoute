@@ -75,7 +75,10 @@ import {
 } from "@/lib/modelsDevSync";
 import type { ModelCapabilityEntry } from "@/lib/modelsDevSync";
 import { getModelSpec } from "@/shared/constants/modelSpecs";
-import { classifyModelSupportedEndpoints } from "@/shared/constants/modelSupportedEndpoints";
+import {
+  classifyModelSupportedEndpoints,
+  defaultEndpointsForProviderNodeApiType,
+} from "@/shared/constants/modelSupportedEndpoints";
 import { getModelsCatalogPrefixMode } from "@/shared/utils/featureFlags";
 import {
   isProviderNodePrefixReserved,
@@ -392,6 +395,9 @@ async function buildUnifiedModelsResponseCore(
     const providerIdToPrefix: Record<string, string> = {};
     const providerNodeIdByPrefix: Record<string, string> = {};
     const nodeIdToProviderType: Record<string, string> = {};
+    // Node apiType → default endpoint modality for rows that carry no endpoint metadata
+    // (an `embeddings`/`rerank` node's models are that modality, not chat).
+    const nodeIdToApiType: Record<string, string> = {};
     for (const node of providerNodes) {
       const resolvedPrefix =
         node.prefix?.trim() ||
@@ -406,6 +412,9 @@ async function buildUnifiedModelsResponseCore(
       }
       if (node.type) {
         nodeIdToProviderType[node.id] = node.type;
+      }
+      if (typeof node.apiType === "string" && node.apiType) {
+        nodeIdToApiType[node.id] = node.apiType;
       }
     }
     for (const prefix of new Set(Object.values(providerIdToPrefix))) {
@@ -1242,7 +1251,9 @@ async function buildUnifiedModelsResponseCore(
               : sm.id;
 
           const aliasId = `${alias}/${displayModelId}`;
-          const endpoints = Array.isArray(sm.supportedEndpoints) ? sm.supportedEndpoints : ["chat"];
+          const endpoints = Array.isArray(sm.supportedEndpoints)
+            ? sm.supportedEndpoints
+            : defaultEndpointsForProviderNodeApiType(nodeIdToApiType[providerId]);
           const apiFormat = typeof sm.apiFormat === "string" ? sm.apiFormat : "chat-completions";
           const classification = classifyModelSupportedEndpoints(endpoints);
           const modelType = classification.type;
@@ -1707,11 +1718,18 @@ async function buildUnifiedModelsResponseCore(
                       output_modalities: ["text"],
                     }
                 : null;
+            // An explicit endpoint list on the overlay also decides the row's `type`
+            // (a manual `supportedEndpoints: ["rerank"]` row must not stay typed as chat).
+            const overlayClassification = endpoints
+              ? classifyModelSupportedEndpoints(endpoints)
+              : undefined;
             models[existingIndex] = mergeCustomModelMetadata(existing, {
               id: aliasId,
               ...(typeof model.name === "string" ? { name: model.name } : {}),
               ...(apiFormat ? { api_format: apiFormat } : {}),
               ...(endpoints ? { supported_endpoints: endpoints } : {}),
+              ...(overlayClassification?.type ? { type: overlayClassification.type } : {}),
+              ...(overlayClassification?.subtype ? { subtype: overlayClassification.subtype } : {}),
               ...(typeof model.inputTokenLimit === "number"
                 ? { context_length: model.inputTokenLimit }
                 : {}),
@@ -1724,10 +1742,10 @@ async function buildUnifiedModelsResponseCore(
             continue;
           }
 
-          // Determine type from supportedEndpoints
+          // Determine type from supportedEndpoints (falling back to the node's apiType)
           const endpoints = Array.isArray(model.supportedEndpoints)
             ? model.supportedEndpoints
-            : ["chat"];
+            : defaultEndpointsForProviderNodeApiType(nodeIdToApiType[providerId]);
           const apiFormat =
             typeof model.apiFormat === "string" ? model.apiFormat : "chat-completions";
           const classification = classifyModelSupportedEndpoints(endpoints);

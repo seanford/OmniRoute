@@ -521,6 +521,12 @@ POST /v1/music/generations  { "model": "suno/v3.5",   "prompt": "..." }
 > normalized to the Cohere envelope: TEI's bare `[{index, score, text}]`, `{results: [{index, score}]}`
 > from thin gateways, and Voyage-style `{data: [...]}` all come back to the client as
 > `{results: [{index, relevance_score, document?}]}`, sorted by score and capped at `top_n`.
+>
+> **Provider-node discovery:** models on an OpenAI-compatible provider node appear in `GET /v1/models`
+> under the node prefix. Rows that carry no endpoint metadata (typical for local `/v1/models` listings)
+> inherit the node's `apiType`, so an `embeddings` node's models are `type: "embedding"` and a
+> `rerank` node's models are `type: "rerank"` instead of defaulting to chat; an explicit
+> `supportedEndpoints` on a synced or manually added row still takes precedence.
 
 ### Dedicated Provider Routes
 
