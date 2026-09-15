@@ -23,9 +23,19 @@ import { fileURLToPath } from "node:url";
  *  - **`import type` is not an edge.** TypeScript erases it before the bundler sees it. A scan
  *    that counts type imports reports 26 phantom leaks against 2 real ones here — a guard that
  *    cries wolf gets switched off.
- *  - **Dynamic `import()` is not followed.** It does not actually break a bundle edge (that was
- *    tried for #10692 and failed), but it does move the module into a chunk the browser only
- *    fetches on demand, which is a legitimate boundary for a lazily-used server path.
+ *  - **Dynamic `import()` IS followed.** It does not break a bundle edge (that was tried for
+ *    #10692 and failed): the bundler still has to build the lazy chunk for the browser, so a
+ *    Node builtin behind it fails the build exactly like a static one. #13283 proved it — a
+ *    `"use client"` page reached `open-sse/services/model.ts`, whose `await import("@/lib/db/…")`
+ *    dragged the DB layer and the Playwright executors into the client graph and the Docker build
+ *    died with 168 `Module not found: Can't resolve 'child_process'`.
+ *
+ * Server-only modules are recognised two ways: the explicit `SERVER_ONLY` list below, and —
+ * generically — any first-party module that imports a Node builtin the browser bundle cannot
+ * polyfill (`NON_POLYFILLABLE_BUILTINS`). The second rule is what catches the next occurrence
+ * of this pattern in PR CI instead of in the next real Docker build (#13264 was
+ * `codebuddy-cn/index.ts → src/lib/oauth/constants/oauth.ts → cursorAgentCliVersion.ts →
+ * node:fs`, and nothing on the hand-written list covered it).
  */
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -38,6 +48,33 @@ const SERVER_ONLY = new Set([
   "open-sse/utils/proxyFetch.ts",
   "open-sse/utils/tlsClient.ts",
 ]);
+
+/**
+ * Node builtins that no browser bundle can polyfill. `path`, `crypto`, `buffer`, `util`,
+ * `stream`, `os` and friends get browser shims and are deliberately NOT listed; a module that
+ * imports one of these, by bare name or with the `node:` prefix, is server-only.
+ */
+const NON_POLYFILLABLE_BUILTINS = new Set([
+  "fs",
+  "fs/promises",
+  "net",
+  "tls",
+  "child_process",
+  "async_hooks",
+  "worker_threads",
+  "cluster",
+  "dgram",
+  "dns",
+  "http2",
+  "readline",
+  "repl",
+  "v8",
+  "vm",
+]);
+
+function isNonPolyfillableBuiltin(specifier: string): boolean {
+  return NON_POLYFILLABLE_BUILTINS.has(specifier.replace(/^node:/, ""));
+}
 
 /**
  * Non-`"use client"` entry points that still end up in a client bundle because client
@@ -97,10 +134,16 @@ function isTypeOnlyClause(clause: string): boolean {
   return bindings.length > 0 && bindings.every((binding) => /^type\s/.test(binding));
 }
 
-/** Value-carrying static specifiers only. */
+/**
+ * Value-carrying specifiers: static imports/re-exports, side-effect imports, and dynamic
+ * `import("…")` with a literal specifier (see the header for why the last one counts).
+ */
 function staticSpecifiers(source: string): string[] {
   const withoutDynamic = source.replace(/\bimport\s*\(/g, "__dynamic_import__(");
   const out: string[] = [];
+  for (const match of source.matchAll(/\bimport\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+    out.push(match[1]);
+  }
   for (const pattern of [
     /(?:^|\n)\s*import\s+([^;'"]*)from\s*["']([^"']+)["']/g,
     /(?:^|\n)\s*export\s+([^;'"]*)from\s*["']([^"']+)["']/g,
@@ -118,18 +161,33 @@ function staticSpecifiers(source: string): string[] {
 }
 
 const specifierCache = new Map<string, string[]>();
+const builtinCache = new Map<string, string | null>();
 function edgesOf(file: string): string[] {
   const cached = specifierCache.get(file);
   if (cached) return cached;
   const absolute = path.join(REPO_ROOT, file);
   let edges: string[] = [];
+  let builtin: string | null = null;
   if (fs.existsSync(absolute)) {
-    edges = staticSpecifiers(fs.readFileSync(absolute, "utf8"))
+    const specifiers = staticSpecifiers(fs.readFileSync(absolute, "utf8"));
+    builtin = specifiers.find(isNonPolyfillableBuiltin) ?? null;
+    edges = specifiers
       .map((specifier) => resolveSpecifier(file, specifier))
       .filter((resolved): resolved is string => resolved !== null);
   }
   specifierCache.set(file, edges);
+  builtinCache.set(file, builtin);
   return edges;
+}
+
+/** The non-polyfillable builtin `file` imports directly, if any. */
+function builtinOf(file: string): string | null {
+  if (!builtinCache.has(file)) edgesOf(file);
+  return builtinCache.get(file) ?? null;
+}
+
+function isServerOnly(file: string): boolean {
+  return SERVER_ONLY.has(file) || builtinOf(file) !== null;
 }
 
 /** BFS over static imports; returns the first path reaching a server-only module. */
@@ -140,7 +198,10 @@ function findServerOnlyPath(entry: string): string[] | null {
     const trail = queue.shift()!;
     for (const resolved of edgesOf(trail[trail.length - 1])) {
       if (seen.has(resolved)) continue;
-      if (SERVER_ONLY.has(resolved)) return [...trail, resolved];
+      if (isServerOnly(resolved)) {
+        const builtin = builtinOf(resolved);
+        return [...trail, builtin ? `${resolved}  (imports ${builtin})` : resolved];
+      }
       seen.add(resolved);
       queue.push([...trail, resolved]);
     }
@@ -163,7 +224,9 @@ function walk(dir: string, acc: string[] = []): string[] {
 
 function clientEntryPoints(): string[] {
   return walk(path.join(REPO_ROOT, "src")).filter((file) =>
-    /^\s*["']use client["']/m.test(fs.readFileSync(path.join(REPO_ROOT, file), "utf8").slice(0, 200))
+    /^\s*["']use client["']/m.test(
+      fs.readFileSync(path.join(REPO_ROOT, file), "utf8").slice(0, 200)
+    )
   );
 }
 
@@ -175,11 +238,30 @@ test("no client entry point statically reaches server-only code", () => {
     .map((entry) => ({ entry, trail: findServerOnlyPath(entry) }))
     .filter((row): row is { entry: string; trail: string[] } => row.trail !== null);
 
+  // One bad edge is usually reachable from hundreds of entry points; report each distinct
+  // offending edge (the importer → server-only module pair) once, with one example chain and
+  // a count.
+  const distinct = new Map<string, { trail: string[]; entries: number }>();
+  for (const { trail } of offenders) {
+    const key = trail.slice(-2).join("→");
+    const seen = distinct.get(key);
+    if (seen) seen.entries += 1;
+    else distinct.set(key, { trail, entries: 1 });
+  }
+
   assert.deepEqual(
     offenders.map((o) => o.entry),
     [],
     "A client bundle would have to include server-only modules:\n" +
-      offenders.map((o) => `  ${o.trail.join("\n    → ")}`).join("\n\n") +
+      [...distinct.values()]
+        .map(
+          ({ trail, entries }) =>
+            `  ${trail.join("\n    → ")}` +
+            (entries > 1
+              ? `\n    (and ${entries - 1} more client entry points reach the same chain)`
+              : "")
+        )
+        .join("\n\n") +
       "\nBreak the chain — or, when the binding is only a type, mark it `import type` so it " +
       "carries no runtime edge."
   );
