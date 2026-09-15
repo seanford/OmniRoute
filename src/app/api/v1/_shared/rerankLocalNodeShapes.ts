@@ -109,6 +109,34 @@ function pickResultsArray(data: unknown): { list: RawResult[]; envelope: Record<
   return { list: [], envelope: {} };
 }
 
+function resolveResultDocument(raw: RawResult, fallback: unknown): Record<string, unknown> {
+  if (raw.document && typeof raw.document === "object") {
+    return raw.document as Record<string, unknown>;
+  }
+  if (typeof raw.document === "string") return { text: raw.document };
+  if (typeof raw.text === "string") return { text: raw.text };
+  return { text: documentText(fallback) };
+}
+
+/** One raw entry → Cohere result, or `null` when its index or score is unusable. */
+function toCohereResult(
+  raw: RawResult,
+  documents: unknown[],
+  returnDocuments: boolean
+): CohereRerankResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const index = toNumberOrNull(raw.index);
+  if (index === null || !Number.isInteger(index) || index < 0 || index >= documents.length) {
+    return null;
+  }
+  const score = toNumberOrNull(raw.relevance_score) ?? toNumberOrNull(raw.score);
+  if (score === null) return null;
+
+  const result: CohereRerankResult = { index, relevance_score: score };
+  if (returnDocuments) result.document = resolveResultDocument(raw, documents[index]);
+  return result;
+}
+
 /**
  * Normalize a local rerank node's response into the Cohere envelope.
  *
@@ -131,27 +159,8 @@ export function normalizeLocalRerankResponse(
   const results: CohereRerankResult[] = [];
 
   for (const raw of list) {
-    if (!raw || typeof raw !== "object") continue;
-    const index = toNumberOrNull(raw.index);
-    if (index === null || !Number.isInteger(index) || index < 0 || index >= documents.length) {
-      continue;
-    }
-    const score = toNumberOrNull(raw.relevance_score) ?? toNumberOrNull(raw.score);
-    if (score === null) continue;
-
-    const result: CohereRerankResult = { index, relevance_score: score };
-    if (returnDocuments) {
-      if (raw.document && typeof raw.document === "object") {
-        result.document = raw.document as Record<string, unknown>;
-      } else if (typeof raw.document === "string") {
-        result.document = { text: raw.document };
-      } else if (typeof raw.text === "string") {
-        result.document = { text: raw.text };
-      } else {
-        result.document = { text: documentText(documents[index]) };
-      }
-    }
-    results.push(result);
+    const result = toCohereResult(raw, documents, returnDocuments);
+    if (result) results.push(result);
   }
 
   results.sort((a, b) => b.relevance_score - a.relevance_score);
