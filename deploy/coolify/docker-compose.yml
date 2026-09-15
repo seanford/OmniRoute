@@ -1,0 +1,130 @@
+# Coolify Application (Docker Compose build pack) for the OmniRoute dev/test stack on aix.
+#
+# Coolify clones this repo at the configured branch and runs `docker compose build` +
+# `up` from the repo root with the application's environment variables written to .env.
+# Every `${VAR}` below is supplied from the Coolify Application's Environment Variables;
+# no secrets live in this file. Host bind mounts are absolute paths on aix.
+services:
+  omniroute:
+    image: 'omniroute-dev-local:test-rerank'
+    pull_policy: build
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: runner-web
+    restart: unless-stopped
+    stop_grace_period: 90s
+    mem_limit: 16g
+    mem_reservation: 2g
+    shm_size: 2g
+    ports:
+      - '10.10.50.30:20128:20128'
+      - '10.10.50.30:21128:20128'
+    environment:
+      RERANK_REMOTE_PROVIDER_NODES: 'true'
+      API_HOST: '${API_HOST}'
+      API_PORT: '${API_PORT}'
+      AUTH_COOKIE_SECURE: '${AUTH_COOKIE_SECURE}'
+      BASE_URL: '${BASE_URL}'
+      BIFROST_BASE_URL: '${BIFROST_BASE_URL}'
+      BIFROST_ENABLED: '${BIFROST_ENABLED}'
+      CLIPROXYAPI_HOST: '${CLIPROXYAPI_HOST}'
+      CLIPROXYAPI_PORT: '${CLIPROXYAPI_PORT:-8317}'
+      DASHBOARD_PORT: '${DASHBOARD_PORT}'
+      DATA_DIR: '${DATA_DIR}'
+      HOME: /host-home
+      HOSTNAME: '${HOSTNAME}'
+      LIVE_WS_HOST: '${LIVE_WS_HOST}'
+      LIVE_WS_PORT: '${LIVE_WS_PORT}'
+      NEXT_PUBLIC_BASE_URL: '${NEXT_PUBLIC_BASE_URL}'
+      NODE_OPTIONS: '${NODE_OPTIONS}'
+      OMNIROUTE_MEMORY_MB: '${OMNIROUTE_MEMORY_MB}'
+      OMNIROUTE_RELAY_BACKEND: '${OMNIROUTE_RELAY_BACKEND}'
+      PORT: '${PORT}'
+      QDRANT_ENABLED: '${QDRANT_ENABLED}'
+      QDRANT_HOST: '${QDRANT_HOST}'
+      QDRANT_PORT: '${QDRANT_PORT}'
+      REDIS_URL: '${REDIS_URL}'
+      CLI_CONFIG_HOME: '${CLI_CONFIG_HOME}'
+      CLI_ALLOW_CONFIG_WRITES: '${CLI_ALLOW_CONFIG_WRITES}'
+      CLI_MODE: '${CLI_MODE}'
+      CLI_EXTRA_PATHS: '${CLI_EXTRA_PATHS}'
+      OPENCODE_GO_AUTH_COOKIE: '${OPENCODE_GO_AUTH_COOKIE}'
+      OPENCODE_GO_WORKSPACE_ID: '${OPENCODE_GO_WORKSPACE_ID}'
+      OLLAMA_USAGE_COOKIE: '${OLLAMA_USAGE_COOKIE}'
+      DARIO_HOST: '${DARIO_HOST}'
+      DARIO_PORT: '${DARIO_PORT:-3456}'
+    volumes:
+      - '/srv/homelab/apps/omniroute/data:/app/data'
+      - '/home/sean/.codex:/host-home/.codex:rw'
+      - '/home/sean/.claude:/host-home/.claude:rw'
+      - '/home/sean/.factory:/host-home/.factory:rw'
+      - '/home/sean/.cursor:/host-home/.cursor:rw'
+      - '/home/sean/.config/cursor:/host-home/.config/cursor:rw'
+      - '/home/sean/.config/devin:/host-home/.config/devin:rw'
+      - '/home/sean/.zcode:/host-home/.zcode:rw'
+      - '/home/sean/.cline:/host-home/.cline:rw'
+      - '/home/sean/.local/share/kilo:/host-home/.local/share/kilo:rw'
+      - '/home/sean/.continue:/host-home/.continue:rw'
+      - '/home/sean/.config/opencode:/home/node/.config/opencode:rw'
+      - '/home/sean/.config/hermes:/host-home/.config/hermes:rw'
+      - '/home/sean/.qoder:/host-home/.qoder:rw'
+      - '/home/sean/.qwen:/host-home/.qwen:rw'
+      - '/home/sean/.config/goose:/host-home/.config/goose:rw'
+      - '/home/sean/.gemini:/host-home/.gemini:rw'
+      - '/home/sean/.forge:/host-home/.forge:rw'
+      - '/home/sean/.jcode:/host-home/.jcode:rw'
+      - '/home/sean/.prime-agent:/host-home/.prime-agent:rw'
+      - '/home/sean/.grok:/host-home/.grok:rw'
+      - '/home/sean/.config/deepseek-tui:/host-home/.config/deepseek-tui:rw'
+      - '/home/sean/.omp:/host-home/.omp:rw'
+      - '/home/sean/.letta:/host-home/.letta:rw'
+      - '/home/sean/.codewhale:/host-home/.codewhale:rw'
+      - '/home/sean/.smelt:/host-home/.smelt:rw'
+      - '/home/sean/.pi:/host-home/.pi:rw'
+      - '/home/sean/.config/crush:/host-home/.config/crush:rw'
+      - '/home/sean/.omniroute:/host-home/.omniroute:rw'
+      - '/home/sean/.local/bin:/home/sean/.local/bin:ro'
+      - '/home/sean/.local/lib:/home/sean/.local/lib:ro'
+      - '/home/sean/.local/share/cursor-agent:/home/sean/.local/share/cursor-agent:ro'
+      - '/home/sean/.local/share/uv:/home/sean/.local/share/uv:ro'
+      - '/home/sean/.grok:/home/sean/.grok:ro'
+      - '/home/sean/.qoder/bin:/home/sean/.qoder/bin:ro'
+      - '/usr/local/lib/aix-skill-binaries:/usr/local/lib/aix-skill-binaries:ro'
+      - '/srv/homelab/apps/omniroute/data/cli-runtime/cache:/host-home/.cache:rw'
+      - '/srv/homelab/apps/omniroute/data/cli-runtime/opencode-share:/host-home/.local/share/opencode:rw'
+      - '/srv/homelab/apps/omniroute/data/cli-runtime/state:/host-home/.local/state:rw'
+      - '/home/sean/.config/kilo:/host-home/.config/kilo:rw'
+      - '/home/sean/.config/opencode:/host-home/.config/opencode:rw'
+    depends_on:
+      redis-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - healthcheck.mjs
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+  redis-db:
+    image: 'docker.io/library/redis:8'
+    restart: unless-stopped
+    command:
+      - redis-server
+      - '--save'
+      - '60'
+      - '1'
+      - '--loglevel'
+      - warning
+    volumes:
+      - '/srv/homelab/apps/omniroute/data/sidecars/redis:/data'
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
