@@ -9,7 +9,7 @@ services:
     image: 'omniroute-dev-local:test-rerank'
     pull_policy: build
     build:
-      context: ../..
+      context: .   # Coolify runs compose with --project-directory = repo root
       dockerfile: Dockerfile
       target: runner-web
     restart: unless-stopped
