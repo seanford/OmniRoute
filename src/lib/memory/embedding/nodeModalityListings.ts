@@ -53,6 +53,84 @@ function rowEndpoints(row: ProviderNodeModelRow, nodeApiType: string | undefined
     : defaultEndpointsForProviderNodeApiType(nodeApiType);
 }
 
+interface TypedRow {
+  id: string;
+  name: string;
+  endpoints: string[];
+}
+
+function str(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function validRows(
+  rows: ProviderNodeModelRow[] | undefined
+): (ProviderNodeModelRow & { id: string })[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter(
+    (row): row is ProviderNodeModelRow & { id: string } =>
+      !!row && typeof row === "object" && typeof row.id === "string" && row.id !== ""
+  );
+}
+
+/**
+ * Merge a node's synced and custom rows on id, exactly as in /v1/models: a custom
+ * row's explicit `supportedEndpoints` re-types the model (a manual `["rerank"]`
+ * override on a discovered row must win over the node default); a custom row
+ * without one only contributes its name.
+ */
+function mergeNodeRows(
+  apiType: string,
+  synced: ProviderNodeModelRow[] | undefined,
+  custom: ProviderNodeModelRow[] | undefined
+): Map<string, TypedRow> {
+  const rows = new Map<string, TypedRow>();
+  for (const row of validRows(synced)) {
+    rows.set(row.id, {
+      id: row.id,
+      name: str(row.name) || row.id,
+      endpoints: rowEndpoints(row, apiType),
+    });
+  }
+  for (const row of validRows(custom)) {
+    const existing = rows.get(row.id);
+    const explicit = Array.isArray(row.supportedEndpoints);
+    rows.set(row.id, {
+      id: row.id,
+      name: str(row.name) || existing?.name || row.id,
+      endpoints: explicit || !existing ? rowEndpoints(row, apiType) : existing.endpoints,
+    });
+  }
+  return rows;
+}
+
+/** A usable node prefix: non-empty, no path or whitespace characters. */
+function nodePrefix(node: ProviderNodeListingRow): string | null {
+  const prefix = str(node.prefix);
+  if (!prefix || !str(node.baseUrl) || prefix.includes("/") || prefix.includes(" ")) return null;
+  return prefix;
+}
+
+/** The listing for one node, or `null` when it has nothing for `modality`. */
+function nodeListing(
+  modality: NodeListingModality,
+  node: ProviderNodeListingRow,
+  prefix: string,
+  syncedByNodeId: Record<string, ProviderNodeModelRow[] | undefined>,
+  customByNodeId: Record<string, ProviderNodeModelRow[] | undefined>
+): EmbeddingProviderListing | null {
+  const apiType = str(node.apiType).trim().toLowerCase();
+  const nodeId = str(node.id);
+  const rows = mergeNodeRows(apiType, syncedByNodeId[nodeId], customByNodeId[nodeId]);
+  const typed = [...rows.values()].filter((row) => row.endpoints.includes(modality));
+  if (typed.length === 0 && !IMPLICIT_API_TYPES[modality].has(apiType)) return null;
+  return {
+    provider: prefix,
+    hasKey: true, // local provider nodes carry their own credential (or none)
+    models: typed.map((m) => ({ id: `${prefix}/${m.id}`, name: m.name, dimensions: null })),
+  };
+}
+
 /**
  * Pure selection step: which nodes are listed for `modality`, and with which
  * models. Exported for tests; the async loader below feeds it from the DB.
@@ -67,58 +145,12 @@ export function buildProviderNodeModalityListings(
   const seenPrefixes = new Set<string>();
 
   for (const node of nodes) {
-    const prefix = typeof node.prefix === "string" ? node.prefix : "";
-    const baseUrl = typeof node.baseUrl === "string" ? node.baseUrl : "";
-    if (!prefix || !baseUrl || prefix.includes("/") || prefix.includes(" ")) continue;
-    if (seenPrefixes.has(prefix)) continue;
-
-    const apiType = typeof node.apiType === "string" ? node.apiType.trim().toLowerCase() : "";
-    const nodeId = typeof node.id === "string" ? node.id : "";
-
-    // Custom rows overlay synced rows on id, exactly as in /v1/models: a custom
-    // row's explicit `supportedEndpoints` re-types the model (a manual
-    // `["rerank"]` override on a discovered row must win over the node default);
-    // a custom row without one only contributes its name.
-    const rows = new Map<string, { id: string; name: string; endpoints: string[] }>();
-    for (const row of Array.isArray(nodeId ? syncedByNodeId[nodeId] : undefined)
-      ? (syncedByNodeId[nodeId] as ProviderNodeModelRow[])
-      : []) {
-      if (!row || typeof row !== "object" || typeof row.id !== "string" || !row.id) continue;
-      rows.set(row.id, {
-        id: row.id,
-        name: typeof row.name === "string" && row.name ? row.name : row.id,
-        endpoints: rowEndpoints(row, apiType),
-      });
-    }
-    for (const row of Array.isArray(nodeId ? customByNodeId[nodeId] : undefined)
-      ? (customByNodeId[nodeId] as ProviderNodeModelRow[])
-      : []) {
-      if (!row || typeof row !== "object" || typeof row.id !== "string" || !row.id) continue;
-      const existing = rows.get(row.id);
-      const explicit = Array.isArray(row.supportedEndpoints);
-      rows.set(row.id, {
-        id: row.id,
-        name: typeof row.name === "string" && row.name ? row.name : (existing?.name ?? row.id),
-        endpoints: explicit || !existing ? rowEndpoints(row, apiType) : existing.endpoints,
-      });
-    }
-    const typed = new Map<string, { id: string; name: string }>();
-    for (const row of rows.values()) {
-      if (row.endpoints.includes(modality)) typed.set(row.id, { id: row.id, name: row.name });
-    }
-
-    if (typed.size === 0 && !IMPLICIT_API_TYPES[modality].has(apiType)) continue;
-
+    const prefix = nodePrefix(node);
+    if (!prefix || seenPrefixes.has(prefix)) continue;
+    const listing = nodeListing(modality, node, prefix, syncedByNodeId, customByNodeId);
+    if (!listing) continue;
     seenPrefixes.add(prefix);
-    result.push({
-      provider: prefix,
-      hasKey: true, // local provider nodes carry their own credential (or none)
-      models: [...typed.values()].map((m) => ({
-        id: `${prefix}/${m.id}`,
-        name: m.name,
-        dimensions: null,
-      })),
-    });
+    result.push(listing);
   }
 
   return result;
