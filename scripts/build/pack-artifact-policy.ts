@@ -39,6 +39,9 @@ export const APP_STAGING_ALLOWED_EXACT_PATHS: string[] = [
   // this bare entry the prepublish prune deleted it → every `omniroute` boot of the
   // published 3.8.47 crashed with ERR_MODULE_NOT_FOUND (same class as tls-options/3.8.41).
   "head-response-guard.cjs",
+  // server-ws.mjs imports the abort guard at startup. Keep it through the
+  // prepublish prune or every clean npm install crashes before it can serve.
+  "httpClientAbortGuard.mjs",
   "http-method-guard.cjs",
   "open-sse/mcp-server/server.js",
   "open-sse/vendor/codex-chatgpt-web/adapters/chatgpt-web/mcp-server.js",
@@ -201,6 +204,9 @@ export const PACK_ARTIFACT_REQUIRED_PATHS: string[] = [
   "dist/main-server-timeouts.mjs",
   // server-ws.mjs import (sd_notify helper) — enforced by the closure test.
   "dist/systemd-notify.mjs",
+  // Runtime startup dependency copied by assembleStandalone and imported by
+  // dist/server-ws.mjs. Make its absence fail the artifact gate loudly.
+  "dist/httpClientAbortGuard.mjs",
   "dist/http-method-guard.cjs",
   // #5452: regression guard — make check:pack-artifact fail loudly if the TLS
   // opt-in sidecar (imported by dist/server-ws.mjs) ever vanishes from the tarball.
