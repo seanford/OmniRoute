@@ -18,6 +18,8 @@ import {
 } from "@omniroute/open-sse/config/imageRegistry";
 import { aiHordeImageCatalog } from "@omniroute/open-sse/services/aihordeImageCatalog";
 import { getAllRerankModels } from "@omniroute/open-sse/config/rerankRegistry";
+import { getAllSystemOneModels } from "@omniroute/open-sse/config/systemoneRegistry";
+import { isChatSelectableModel } from "@omniroute/open-sse/services/modelEndpointPolicy";
 import { getAllAudioModels } from "@omniroute/open-sse/config/audioRegistry";
 import { getAllModerationModels } from "@omniroute/open-sse/config/moderationRegistry";
 import { getAllVideoModels } from "@omniroute/open-sse/config/videoRegistry";
@@ -1090,6 +1092,7 @@ async function buildUnifiedModelsResponseCore(
         )
           continue;
         if (!isModelSelectable(canonicalProviderId, model.id)) continue;
+        if (!isChatSelectableModel(canonicalProviderId, model)) continue;
         if (!providerSupportsModel(canonicalProviderId, model.id)) continue;
         const aliasId = `${alias}/${model.id}`;
         if (isModelHiddenBulk(alias, model.id, canonicalProviderId)) continue;
@@ -1580,6 +1583,37 @@ async function buildUnifiedModelsResponseCore(
         owned_by: rerankModel.provider,
         root: rawModelId,
         type: "rerank",
+      });
+    }
+
+    // Add System One evaluation models. These are explicitly non-chat and are
+    // exposed only for POST /v1/systemone.
+    for (const systemOneModel of getAllSystemOneModels()) {
+      if (!isProviderActive(systemOneModel.provider)) continue;
+      const rawModelId = getSpecialtyModelRelativeId(systemOneModel.id, systemOneModel.provider);
+      if (!providerSupportsModel(systemOneModel.provider, rawModelId)) continue;
+      if (isModelHiddenBulk(systemOneModel.provider, rawModelId, null, "systemone")) continue;
+      if (
+        hasEquivalentSpecialtyModel(
+          systemOneModel.provider,
+          rawModelId,
+          "systemone",
+          systemOneModel.id
+        )
+      ) {
+        continue;
+      }
+      models.push({
+        id: systemOneModel.id,
+        object: "model",
+        created: timestamp,
+        owned_by: systemOneModel.provider,
+        root: rawModelId,
+        type: "systemone",
+        api_format: "systemone",
+        supported_endpoints: ["systemone"],
+        input_modalities: ["text"],
+        output_modalities: ["structured"],
       });
     }
 
